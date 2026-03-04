@@ -1,76 +1,77 @@
 import pygame
 import sys
 import random
+from pathlib import Path
 
 # Inicializa todos os módulos do pygame
 pygame.init()
 
-# Definição do tamanho da janela do jogo
+# CONFIGURAÇÃO DA JANELA
 WIDTH, HEIGHT = 800, 500
 
-# Cria a janela
+# Cria a janela do jogo
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
 
-# Define o título da janela
+# Título da janela
 pygame.display.set_caption("Arcade DevOps Game")
 
-# Definição de cores (RGB)
+# Cores
 WHITE = (255, 255, 255)
-BLUE = (50, 100, 255)
+BLACK = (0, 0, 0)
 YELLOW = (255, 200, 0)
-BLACK = (0,0,0)
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+ASSETS_DIR = BASE_DIR / "assets"
+
+# CARREGAMENTO DO PERSONAGEM
+
+# Carrega o sprite do personagem
+player_img = pygame.image.load(ASSETS_DIR / "personagem.png").convert_alpha()
+
+# Define tamanho do personagem
+PLAYER_SIZE = 48
+
+# Redimensiona o sprite
+player_img = pygame.transform.scale(player_img, (PLAYER_SIZE, PLAYER_SIZE))
 
 # CONFIGURAÇÕES DO JOGADOR
 
-# Tamanho do jogador
-player_size = 40
-
-# Posição inicial do jogador (centro da tela)
 player_x = WIDTH // 2
 player_y = HEIGHT // 2
 
-# Velocidade de movimentação
 speed = 5
 
 # CONFIGURAÇÕES DA MOEDA
 
-# Raio da moeda
 coin_radius = 10
 
-# Posição aleatória inicial da moeda
-coin_x = random.randint(50, WIDTH-50)
-coin_y = random.randint(50, HEIGHT-50)
+# posição aleatória inicial
+coin_x = random.randint(50, WIDTH - 50)
+coin_y = random.randint(50, HEIGHT - 50)
 
 # SISTEMA DE PONTUAÇÃO
 
-# Pontuação inicial
 score = 0
 
-# Fonte usada para exibir o score
 font = pygame.font.SysFont(None, 30)
 
-# Controla o FPS do jogo
 clock = pygame.time.Clock()
 
 # LOOP PRINCIPAL DO JOGO
 
 while True:
-
-    # Limita o jogo a 60 quadros por segundo
     clock.tick(60)
 
-    # Verifica eventos do jogo (fechar janela, teclado etc)
+    # Eventos do jogo
     for event in pygame.event.get():
-
-        # Se o usuário fechar a janela
         if event.type == pygame.QUIT:
             pygame.quit()
             sys.exit()
 
-    # Captura as teclas pressionadas
+    # Teclas pressionadas
     keys = pygame.key.get_pressed()
 
-    # Movimentação do jogador com as setas
+    # Movimentação
     if keys[pygame.K_LEFT]:
         player_x -= speed
 
@@ -83,45 +84,44 @@ while True:
     if keys[pygame.K_DOWN]:
         player_y += speed
 
-    # Cria um retângulo para representar o jogador
-    # Isso facilita detectar colisões
-    player_rect = pygame.Rect(player_x, player_y, player_size, player_size)
+    # LIMITAR MOVIMENTO NA TELA
 
-    # Cria um retângulo invisível em volta da moeda
-    # usado para detectar colisão com o jogador
+    player_x = max(0, min(WIDTH - PLAYER_SIZE, player_x))
+    player_y = max(0, min(HEIGHT - PLAYER_SIZE, player_y))
+
+    # Retângulo do jogador (para colisão)
+    player_rect = pygame.Rect(player_x, player_y, PLAYER_SIZE, PLAYER_SIZE)
+
+    # Retângulo da moeda
     coin_rect = pygame.Rect(
-        coin_x-coin_radius,
-        coin_y-coin_radius,
-        coin_radius*2,
-        coin_radius*2
+        coin_x - coin_radius,
+        coin_y - coin_radius,
+        coin_radius * 2,
+        coin_radius * 2
     )
 
-    # DETECÇÃO DE COLISÃO
-
-    # Se o jogador encostar na moeda
+    # COLISÃO COM MOEDA
     if player_rect.colliderect(coin_rect):
 
-        # aumenta a pontuação
+        # aumenta pontuação
         score += 1
 
-        # gera nova posição aleatória para a moeda
-        coin_x = random.randint(50, WIDTH-50)
-        coin_y = random.randint(50, HEIGHT-50)
+        # nova posição aleatória
+        coin_x = random.randint(50, WIDTH - 50)
+        coin_y = random.randint(50, HEIGHT - 50)
 
 
     screen.fill(WHITE)
 
-    # desenha o jogador
-    pygame.draw.rect(screen, BLUE, player_rect)
+    # desenha personagem
+    screen.blit(player_img, (player_x, player_y))
 
-    # desenha a moeda
+    # desenha moeda
     pygame.draw.circle(screen, YELLOW, (coin_x, coin_y), coin_radius)
 
-    # cria o texto do score
+    # texto do score
     score_text = font.render(f"Score: {score}", True, BLACK)
 
-    # desenha o score na tela
-    screen.blit(score_text, (10,10))
+    screen.blit(score_text, (10, 10))
 
-    # atualiza a tela
     pygame.display.update()
