@@ -20,13 +20,19 @@ WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 YELLOW = (255, 200, 0)
 
+# função para encontrar arquivos tanto no python normal quanto no executável
+def resource_path(relative_path):
+    if hasattr(sys, "_MEIPASS"):
+        return str(Path(sys._MEIPASS) / relative_path)
+    return str(Path(__file__).resolve().parent.parent / relative_path)
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = BASE_DIR / "assets"
 
 # CARREGAMENTO DO PERSONAGEM
 
 # Carrega o sprite do personagem
-player_img = pygame.image.load(ASSETS_DIR / "personagem.png").convert_alpha()
+player_img = pygame.image.load(resource_path("assets/personagem.png")).convert_alpha()
 
 # Define tamanho do personagem
 PLAYER_SIZE = 48
@@ -109,7 +115,6 @@ while True:
         # nova posição aleatória
         coin_x = random.randint(50, WIDTH - 50)
         coin_y = random.randint(50, HEIGHT - 50)
-
 
     screen.fill(WHITE)
 
