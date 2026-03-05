@@ -3,130 +3,384 @@ import sys
 import random
 from pathlib import Path
 
-# Inicializa todos os módulos do pygame
 pygame.init()
 
-# CONFIGURAÇÃO DA JANELA
-WIDTH, HEIGHT = 800, 500
+# ==============================
+# CONFIGURAÇÃO DA JANELA / GRID
+# ==============================
+WIDTH, HEIGHT = 960, 544  # 30x17 tiles se TILE=32 (cabe UI legal)
+TILE = 32
+COLS = WIDTH // TILE
+ROWS = HEIGHT // TILE
 
-# Cria a janela do jogo
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Fazenda Constructor - Plantio, Recompensa e Loja")
 
-# Título da janela
-pygame.display.set_caption("Arcade DevOps Game")
+clock = pygame.time.Clock()
+font = pygame.font.SysFont(None, 24)
+big_font = pygame.font.SysFont(None, 36)
 
-# Cores
-WHITE = (255, 255, 255)
-BLACK = (0, 0, 0)
-YELLOW = (255, 200, 0)
+# ==============================
+# CORES (fallback)
+# ==============================
+GREEN = (90, 170, 90)
+BROWN = (130, 90, 60)
+DARK = (30, 30, 30)
+WHITE = (240, 240, 240)
+YELLOW = (255, 210, 60)
+BLUE = (80, 120, 230)
 
-# função para encontrar arquivos tanto no python normal quanto no executável
-def resource_path(relative_path):
+# ==============================
+# PATH PARA PYINSTALLER
+# ==============================
+def resource_path(relative_path: str) -> str:
     if hasattr(sys, "_MEIPASS"):
         return str(Path(sys._MEIPASS) / relative_path)
     return str(Path(__file__).resolve().parent.parent / relative_path)
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-ASSETS_DIR = BASE_DIR / "assets"
+def load_sprite(path: str, size: int):
+    try:
+        img = pygame.image.load(resource_path(path)).convert_alpha()
+        return pygame.transform.scale(img, (size, size))
+    except Exception:
+        return None
 
-# CARREGAMENTO DO PERSONAGEM
+# ==============================
+# SPRITES (com fallback)
+# ==============================
+spr_grass = load_sprite("assets/grama.png", TILE)
+spr_fence = load_sprite("assets/cerca.png", TILE)
+spr_soil  = load_sprite("assets/terra.jpeg", TILE)
+spr_player = load_sprite("assets/personagem.png", TILE)
+spr_seed = load_sprite("assets/.png", TILE)
 
-# Carrega o sprite do personagem
-player_img = pygame.image.load(resource_path("assets/personagem.png")).convert_alpha()
+spr_crop1 = load_sprite("assets/planta.png", TILE)
+spr_crop2 = load_sprite("assets/planta.png", TILE)
+spr_crop3 = load_sprite("assets/planta.png", TILE)
 
-# Define tamanho do personagem
-PLAYER_SIZE = 108
+# ==============================
+# TILES / MAPA
+# ==============================
+# 0 = grama (anda)
+# 1 = cerca/obstáculo (bloqueia)
+# 2 = terra plantável (anda + pode plantar)
+T_GRASS, T_FENCE, T_SOIL = 0, 1, 2
 
-# Redimensiona o sprite
-player_img = pygame.transform.scale(player_img, (PLAYER_SIZE, PLAYER_SIZE))
+def new_world(cols, rows):
+    w = [[T_GRASS for _ in range(cols)] for _ in range(rows)]
 
-# CONFIGURAÇÕES DO JOGADOR
+    # borda cercada
+    for x in range(cols):
+        w[0][x] = T_FENCE
+        w[rows - 1][x] = T_FENCE
+    for y in range(rows):
+        w[y][0] = T_FENCE
+        w[y][cols - 1] = T_FENCE
 
-player_x = WIDTH // 2
-player_y = HEIGHT // 2
+    # área de terra plantável (um “campo”)
+    field_x0, field_y0 = 3, 3
+    field_w, field_h = max(6, cols // 2), max(5, rows // 2)
+    for y in range(field_y0, min(rows - 2, field_y0 + field_h)):
+        for x in range(field_x0, min(cols - 2, field_x0 + field_w)):
+            w[y][x] = T_SOIL
 
-speed = 5
+    # cercas internas para “cara de constructor”
+    if cols > 18:
+        for y in range(2, rows - 2):
+            if y % 2 == 0:
+                w[y][cols // 2] = T_FENCE
 
-# CONFIGURAÇÕES DA MOEDA
+    return w
 
-coin_radius = 10
+world_cols, world_rows = COLS, ROWS
+world = new_world(world_cols, world_rows)
 
-# posição aleatória inicial
-coin_x = random.randint(50, WIDTH - 50)
-coin_y = random.randint(50, HEIGHT - 50)
+def is_blocked(r, c):
+    if r < 0 or r >= world_rows or c < 0 or c >= world_cols:
+        return True
+    return world[r][c] == T_FENCE
 
-# SISTEMA DE PONTUAÇÃO
+# ==============================
+# SISTEMAS DE PLANTIO / CRESCIMENTO
+# ==============================
+# crop_state[(r,c)] = stage (1..3)
+# crop_timer[(r,c)] = ticks até próximo estágio
+crop_state = {}
+crop_timer = {}
 
-score = 0
+# ticks para crescer (quanto menor, mais rápido)
+growth_ticks = 180  # base
+# recompensa por colher
+harvest_reward = 5
 
-font = pygame.font.SysFont(None, 30)
+# estoque
+seeds = 5
+coins = 0
 
-clock = pygame.time.Clock()
+# ==============================
+# PLAYER
+# ==============================
+player_r, player_c = 2, 2
 
-# LOOP PRINCIPAL DO JOGO
+# ==============================
+# LOJA
+# ==============================
+shop_open = False
 
-while True:
-    clock.tick(60)
+# Itens: (nome, custo, ação)
+# 1) expandir: aumenta cols/rows e recria mundo (mantém fazenda maior)
+# 2) sementes +5
+# 3) upgrade: reduz growth_ticks (cresce mais rápido)
+def shop_items():
+    return [
+        ("Expandir fazenda (+4 cols, +3 rows)", 30),
+        ("Comprar sementes (+5)", 10),
+        ("Upgrade crescimento (-20 ticks)", 25),
+    ]
 
-    # Eventos do jogo
+def apply_purchase(idx):
+    global coins, seeds, growth_ticks, world_cols, world_rows, world, world_rows, world_cols
+    items = shop_items()
+    name, cost = items[idx]
+    if coins < cost:
+        return "Dinheiro insuficiente!"
+
+    coins -= cost
+
+    if idx == 0:
+        # expandir mundo
+        world_cols = min(60, world_cols + 4)
+        world_rows = min(40, world_rows + 3)
+        # recria mundo maior
+        world = new_world(world_cols, world_rows)
+        # ao expandir, mantemos plantações em tiles que ainda existem
+        # (simples: remove as que ficaram fora)
+        keys = list(crop_state.keys())
+        for (r, c) in keys:
+            if r >= world_rows or c >= world_cols:
+                crop_state.pop((r, c), None)
+                crop_timer.pop((r, c), None)
+
+        return "Fazenda expandida!"
+    elif idx == 1:
+        seeds += 5
+        return "+5 sementes!"
+    elif idx == 2:
+        growth_ticks = max(60, growth_ticks - 20)
+        return "Crescimento mais rápido!"
+    return "OK"
+
+shop_message = ""
+shop_message_timer = 0
+
+# ==============================
+# FUNÇÕES DE DESENHO
+# ==============================
+def draw_tile(tile, x, y):
+    if tile == T_GRASS:
+        if spr_grass:
+            screen.blit(spr_grass, (x, y))
+        else:
+            pygame.draw.rect(screen, GREEN, (x, y, TILE, TILE))
+    elif tile == T_FENCE:
+        if spr_fence:
+            screen.blit(spr_fence, (x, y))
+        else:
+            pygame.draw.rect(screen, BROWN, (x, y, TILE, TILE))
+    elif tile == T_SOIL:
+        if spr_soil:
+            screen.blit(spr_soil, (x, y))
+        else:
+            pygame.draw.rect(screen, (150, 110, 80), (x, y, TILE, TILE))
+
+def draw_crop(r, c):
+    stage = crop_state.get((r, c), 0)
+    x, y = c * TILE, r * TILE
+    img = None
+    if stage == 1:
+        img = spr_crop1
+    elif stage == 2:
+        img = spr_crop2
+    elif stage == 3:
+        img = spr_crop3
+
+    if img:
+        screen.blit(img, (x, y))
+    elif stage > 0:
+        # fallback: bolinha verde
+        pygame.draw.circle(screen, (40, 160, 60), (x + TILE//2, y + TILE//2), 6 + stage*3)
+
+def draw_player():
+    x, y = player_c * TILE, player_r * TILE
+    if spr_player:
+        screen.blit(spr_player, (x, y))
+    else:
+        pygame.draw.rect(screen, DARK, (x, y, TILE, TILE))
+
+def draw_ui():
+    ui = f"Moedas: {coins}   Sementes: {seeds}   Crescimento: {growth_ticks} ticks   Colheita: +{harvest_reward}"
+    txt = font.render(ui, True, WHITE)
+    pygame.draw.rect(screen, DARK, (0, 0, WIDTH, 28))
+    screen.blit(txt, (10, 6))
+
+def draw_shop():
+    # overlay simples
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 170))
+    screen.blit(overlay, (0, 0))
+
+    title = big_font.render("LOJA (B para fechar)", True, WHITE)
+    screen.blit(title, (WIDTH//2 - title.get_width()//2, 60))
+
+    items = shop_items()
+    y = 140
+    for i, (name, cost) in enumerate(items, start=1):
+        line = font.render(f"{i}) {name}  -  {cost} moedas", True, WHITE)
+        screen.blit(line, (120, y))
+        y += 40
+
+    hint = font.render("Use 1, 2, 3 para comprar.", True, YELLOW)
+    screen.blit(hint, (120, y + 20))
+
+    if shop_message_timer > 0:
+        msg = font.render(shop_message, True, BLUE)
+        screen.blit(msg, (120, y + 60))
+
+# ==============================
+# LÓGICA DO JOGO
+# ==============================
+tick_counter = 0
+
+running = True
+while running:
+    dt = clock.tick(60)
+    tick_counter += 1
+
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
-            pygame.quit()
-            sys.exit()
+            running = False
 
-    # Teclas pressionadas
-    keys = pygame.key.get_pressed()
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_ESCAPE:
+                running = False
 
-    # Movimentação
-    if keys[pygame.K_LEFT]:
-        player_x -= speed
+            # abrir/fechar loja
+            if event.key == pygame.K_b:
+                shop_open = not shop_open
 
-    if keys[pygame.K_RIGHT]:
-        player_x += speed
+            # compras na loja
+            if shop_open:
+                if event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
+                    idx = {pygame.K_1: 0, pygame.K_2: 1, pygame.K_3: 2}[event.key]
+                    shop_message = apply_purchase(idx)
+                    shop_message_timer = 120  # frames ~2s
+                continue
 
-    if keys[pygame.K_UP]:
-        player_y -= speed
+            # movimento em grid estilo constructor
+            nr, nc = player_r, player_c
+            if event.key == pygame.K_LEFT:
+                nc -= 1
+            elif event.key == pygame.K_RIGHT:
+                nc += 1
+            elif event.key == pygame.K_UP:
+                nr -= 1
+            elif event.key == pygame.K_DOWN:
+                nr += 1
 
-    if keys[pygame.K_DOWN]:
-        player_y += speed
+            if (nr, nc) != (player_r, player_c):
+                if not is_blocked(nr, nc):
+                    player_r, player_c = nr, nc
 
-    # LIMITAR MOVIMENTO NA TELA
+            # interação: plantar/colher
+            if event.key == pygame.K_e:
+                tile = world[player_r][player_c]
 
-    player_x = max(0, min(WIDTH - PLAYER_SIZE, player_x))
-    player_y = max(0, min(HEIGHT - PLAYER_SIZE, player_y))
+                # plantar só em terra e se não tiver planta e tiver semente
+                if tile == T_SOIL and (player_r, player_c) not in crop_state:
+                    if seeds > 0:
+                        seeds -= 1
+                        crop_state[(player_r, player_c)] = 1
+                        crop_timer[(player_r, player_c)] = growth_ticks
+                    # se não tiver seed, não faz nada
 
-    # Retângulo do jogador (para colisão)
-    player_rect = pygame.Rect(player_x + 35, player_y + 35, PLAYER_SIZE - 70, PLAYER_SIZE - 70)
+                # colher se planta madura
+                if crop_state.get((player_r, player_c)) == 3:
+                    crop_state.pop((player_r, player_c), None)
+                    crop_timer.pop((player_r, player_c), None)
+                    coins += harvest_reward
 
-    # Retângulo da moeda
-    coin_rect = pygame.Rect(
-        coin_x - coin_radius,
-        coin_y - coin_radius,
-        coin_radius * 2,
-        coin_radius * 2
-    )
+    # crescimento das plantas (tick-based)
+    # a cada frame, decrementa timers e sobe estágio
+    to_upgrade = []
+    for pos, t in list(crop_timer.items()):
+        t -= 1
+        crop_timer[pos] = t
+        if t <= 0:
+            to_upgrade.append(pos)
 
-    # COLISÃO COM MOEDA
-    if player_rect.colliderect(coin_rect):
+    for pos in to_upgrade:
+        stage = crop_state.get(pos, 0)
+        if stage in (1, 2):
+            crop_state[pos] = stage + 1
+            crop_timer[pos] = growth_ticks
+        else:
+            # madura fica madura (sem timer)
+            crop_timer.pop(pos, None)
 
-        # aumenta pontuação
-        score += 1
+    # mensagem da loja
+    if shop_message_timer > 0:
+        shop_message_timer -= 1
+        if shop_message_timer <= 0:
+            shop_message = ""
 
-        # nova posição aleatória
-        coin_x = random.randint(50, WIDTH - 50)
-        coin_y = random.randint(50, HEIGHT - 50)
+    # ==============================
+    # DESENHAR
+    # ==============================
+    screen.fill((0, 0, 0))
 
-    screen.fill(WHITE)
+    # desenha o mundo
+    for r in range(world_rows):
+        for c in range(world_cols):
+            # só desenha o que cabe na tela (camera simples: sem scroll por enquanto)
+            # no começo, o mundo não pode ser maior que a tela; a expansão vai além,
+            # mas aqui ainda desenhamos só o que cabe.
+            if r >= ROWS or c >= COLS:
+                continue
+            x, y = c * TILE, r * TILE
+            draw_tile(world[r][c], x, y)
 
-    # desenha personagem
-    screen.blit(player_img, (player_x, player_y))
+    # desenha plantações
+    for (r, c) in list(crop_state.keys()):
+        if r < ROWS and c < COLS:
+            draw_crop(r, c)
 
-    # desenha moeda
-    pygame.draw.circle(screen, YELLOW, (coin_x, coin_y), coin_radius)
+    # desenha player
+    draw_player()
 
-    # texto do score
-    score_text = font.render(f"Score: {score}", True, BLACK)
+    # ui
+    draw_ui()
 
-    screen.blit(score_text, (10, 10))
+    # hint tile
+    tile_here = world[player_r][player_c]
+    hint = ""
+    if tile_here == T_SOIL and (player_r, player_c) not in crop_state and seeds > 0:
+        hint = "E: Plantar"
+    elif crop_state.get((player_r, player_c)) == 3:
+        hint = "E: Colher (+moedas)"
+    elif tile_here == T_SOIL and seeds == 0:
+        hint = "Sem sementes (compre na loja: B)"
+    else:
+        hint = "B: Loja | E: Interagir"
+
+    hint_txt = font.render(hint, True, WHITE)
+    pygame.draw.rect(screen, DARK, (0, HEIGHT - 28, WIDTH, 28))
+    screen.blit(hint_txt, (10, HEIGHT - 22))
+
+    # loja
+    if shop_open:
+        draw_shop()
 
     pygame.display.update()
+
+pygame.quit()
+sys.exit()
